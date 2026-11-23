@@ -1,0 +1,98 @@
+name: CI/CD FastAPI - Homologacao e Producao
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+
+env:
+  IMAGE_NAME: fastapi-cicd-app
+
+jobs:
+  build:
+    name: Build Imagem Docker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do codigo
+        uses: actions/checkout@v4
+
+      - name: Build da imagem Docker
+        run: docker build -t ${{ env.IMAGE_NAME }}:latest .
+
+      - name: Salvar imagem para transferir aos servidores
+        run: docker save ${{ env.IMAGE_NAME }}:latest -o app-image.tar
+
+      - name: Upload do artefato da imagem
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: app-image.tar
+
+  Deploy_Homologacao:
+    name: Deploy Homologacao (Porta 8080)
+    needs: build
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    environment: homologacao
+    steps:
+      - name: Download do artefato da imagem
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Copiar imagem para EC2 Homologacao
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "app-image.tar"
+          target: "/home/ubuntu"
+
+      - name: Deploy do container em Homologacao
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            docker load -i /home/ubuntu/app-image.tar
+            docker stop ${{ env.IMAGE_NAME }}-homol || true
+            docker rm ${{ env.IMAGE_NAME }}-homol || true
+            docker run -d --name ${{ env.IMAGE_NAME }}-homol -p 8080:8000 -e AMBIENTE="Homologacao" ${{ env.IMAGE_NAME }}:latest
+            rm -f /home/ubuntu/app-image.tar
+
+  Deploy_Producao:
+    name: Deploy Producao (Porta 80)
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: producao
+    steps:
+      - name: Download do artefato da imagem
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Copiar imagem para EC2 Producao
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "app-image.tar"
+          target: "/home/ubuntu"
+
+      - name: Deploy do container em Producao
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            docker load -i /home/ubuntu/app-image.tar
+            docker stop ${{ env.IMAGE_NAME }}-prd || true
+            docker rm ${{ env.IMAGE_NAME }}-prd || true
+            docker run -d --name ${{ env.IMAGE_NAME }}-prd -p 80:8000 -e AMBIENTE="Producao" ${{ env.IMAGE_NAME }}:latest
+            rm -f /home/ubuntu/app-image.tar
